@@ -2,7 +2,7 @@ import os
 import json
 import redis
 import time
-from train import train_forecaster_for_monitor
+from src.train import train_forecaster_for_monitor
 
 def main():
     redis_host = os.getenv("REDIS_HOST", "localhost")

@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
-from predict import predict_timings_for_monitor
+from src.predict import predict_timings_for_monitor
 
 app = FastAPI(title="Opsway Forecaster API")
 
@@ -46,7 +46,7 @@ class ForecastResponse(BaseModel):
     upper_bounds: list[float]
     lower_bounds: list[float]
 
-from predict import forecast_for_monitor
+from src.predict import forecast_for_monitor
 
 @app.post("/forecast", response_model=ForecastResponse)
 def forecast(req: ForecastRequest):
