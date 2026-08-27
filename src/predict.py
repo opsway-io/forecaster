@@ -31,10 +31,19 @@ def get_monitor_profile(monitor_id: int):
         df['hour'] = df['created_at'].dt.hour
         df['day_of_week'] = df['created_at'].dt.dayofweek
 
-        # Calculate profile (mean & std) grouped by day of week and hour of day
-        profile_map = df.groupby(['day_of_week', 'hour'])['response_time'].agg(['mean', 'std']).to_dict(orient='index')
-        global_mean = float(df['response_time'].mean())
-        global_std = float(df['response_time'].std())
+        # Calculate profile (median & robust_std) grouped by day of week and hour of day
+        def robust_std(x):
+            import numpy as np
+            mad = np.median(np.abs(x - np.median(x)))
+            return 1.4826 * mad
+
+        profile_map = df.groupby(['day_of_week', 'hour'])['response_time'].agg(
+            mean='median', 
+            std=robust_std
+        ).to_dict(orient='index')
+        
+        global_mean = float(df['response_time'].median())
+        global_std = float(robust_std(df['response_time']))
         if pd.isna(global_std) or global_std == 0:
             global_std = 0.1 * global_mean if global_mean > 0 else 50.0
     else:
