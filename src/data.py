@@ -15,12 +15,12 @@ def get_monitor_data(client, monitor_id: int) -> pd.DataFrame:
     query = f"""
     SELECT 
         created_at,
-        timing_total / 1000000 AS response_time,
-        timing_dns_lookup / 1000000 AS dns_lookup,
-        timing_tcp_connection / 1000000 AS tcp_connection,
-        timing_tls_handshake / 1000000 AS tls_handshake,
-        timing_server_processing / 1000000 AS server_processing,
-        timing_content_transfer / 1000000 AS content_transfer,
+        timing_total / 1000.0 AS response_time,
+        timing_dns_lookup / 1000.0 AS dns_lookup,
+        timing_tcp_connection / 1000.0 AS tcp_connection,
+        timing_tls_handshake / 1000.0 AS tls_handshake,
+        timing_server_processing / 1000.0 AS server_processing,
+        timing_content_transfer / 1000.0 AS content_transfer,
         status_code
     FROM checks
     WHERE monitor_id = {monitor_id}

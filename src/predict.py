@@ -66,7 +66,15 @@ def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[
     model_name = f"forecaster_monitor_{monitor_id}"
     
     try:
-        model = mlflow.sklearn.load_model(f"models:/{model_name}/latest")
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+        versions = client.search_model_versions(f"name='{model_name}'")
+        if len(versions) > 0:
+            latest_version = max(versions, key=lambda v: int(v.version))
+            model_uri = f"models:/{model_name}/{latest_version.version}"
+        else:
+            model_uri = f"models:/{model_name}/latest"
+        model = mlflow.sklearn.load_model(model_uri)
     except Exception as e:
         print(f"Failed to load model for monitor {monitor_id}: {e}")
         # Default to False (no anomaly) if model is missing or fails to load,
@@ -76,7 +84,7 @@ def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[
         return [False] * len(timings)
         
     df = pd.DataFrame(timings)
-    now = datetime.now()
+    now = datetime.utcnow()
     df['hour'] = now.hour
     df['day_of_week'] = now.weekday()
     
@@ -125,7 +133,7 @@ def _calculate_bounds(monitor_id: int, timestamps: list[str]) -> tuple[list[floa
     upper_bounds = []
     lower_bounds = []
 
-    now = datetime.now()
+    now = datetime.utcnow()
     for ts in timestamps:
         dt = now
         if ts:
