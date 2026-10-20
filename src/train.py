@@ -1,4 +1,6 @@
 import os
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "1")
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
 import mlflow
 import mlflow.sklearn
 from sklearn.ensemble import IsolationForest

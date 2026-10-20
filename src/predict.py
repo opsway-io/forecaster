@@ -1,4 +1,6 @@
 import os
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "2")
 import mlflow
 import mlflow.sklearn
 import pandas as pd
