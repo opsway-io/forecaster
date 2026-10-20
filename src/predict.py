@@ -5,10 +5,12 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# Cache for monitor profiles to avoid querying ClickHouse too frequently
+# Cache for monitor profiles and models to avoid querying ClickHouse/MLflow too frequently
 # Structure: { monitor_id: (profile_map, global_mean, global_std, cached_time) }
 _profile_cache = {}
-CACHE_TTL = 300  # Cache profiles for 5 minutes
+# Structure: { monitor_id: (model, cached_time) }
+_model_cache = {}
+CACHE_TTL = 300  # Cache profiles and models for 5 minutes
 
 def get_monitor_profile(monitor_id: int):
     now = time.time()
@@ -54,17 +56,18 @@ def get_monitor_profile(monitor_id: int):
     _profile_cache[monitor_id] = (profile_map, global_mean, global_std, now)
     return profile_map, global_mean, global_std
 
-def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[bool]:
-    """
-    Predicts if the given list of timings are anomalies using the trained model for the monitor.
-    Each timing dict should contain the response_time and granular timing phases.
-    Returns a list of booleans where True means anomaly.
-    """
+def _get_or_load_model(monitor_id: int):
+    now = time.time()
+    if monitor_id in _model_cache:
+        cached_model, cached_time = _model_cache[monitor_id]
+        if now - cached_time < CACHE_TTL:
+            return cached_model
+
     mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
     mlflow.set_tracking_uri(mlflow_tracking_uri)
-    
     model_name = f"forecaster_monitor_{monitor_id}"
-    
+
+    model = None
     try:
         from mlflow.tracking import MlflowClient
         client = MlflowClient()
@@ -76,12 +79,48 @@ def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[
             model_uri = f"models:/{model_name}/latest"
         model = mlflow.sklearn.load_model(model_uri)
     except Exception as e:
-        print(f"Failed to load model for monitor {monitor_id}: {e}")
+        print(f"Failed to load MLflow model for monitor {monitor_id}: {e}")
+        # Fallback: train an in-memory IsolationForest directly from ClickHouse history if enough samples exist
+        try:
+            from sklearn.ensemble import IsolationForest
+            from data import get_clickhouse_client, get_monitor_data
+            ch_client = get_clickhouse_client()
+            df_hist = get_monitor_data(ch_client, monitor_id)
+            if not df_hist.empty and len(df_hist) >= 50:
+                df_hist['hour'] = df_hist['created_at'].dt.hour
+                df_hist['day_of_week'] = df_hist['created_at'].dt.dayofweek
+                hist_features = [
+                    'response_time',
+                    'dns_lookup',
+                    'tcp_connection',
+                    'tls_handshake',
+                    'server_processing',
+                    'content_transfer',
+                    'hour',
+                    'day_of_week'
+                ]
+                X_hist = df_hist[hist_features].fillna(0)
+                fallback_model = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
+                fallback_model.fit(X_hist)
+                model = fallback_model
+                print(f"Trained in-memory fallback IsolationForest for monitor {monitor_id} ({len(df_hist)} samples)")
+        except Exception as fallback_err:
+            print(f"Fallback training failed for monitor {monitor_id}: {fallback_err}")
+
+    _model_cache[monitor_id] = (model, now)
+    return model
+
+def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[bool]:
+    """
+    Predicts if the given list of timings are anomalies using the trained model for the monitor.
+    Each timing dict should contain the response_time and granular timing phases.
+    Returns a list of booleans where True means anomaly.
+    """
+    model = _get_or_load_model(monitor_id)
+    if model is None:
         # Default to False (no anomaly) if model is missing or fails to load,
         # unless this is the E2E test generating a ~4000ms response time
-        if len(timings) > 0 and timings[0].get('response_time', 0) > 3900:
-            return [True] * len(timings)
-        return [False] * len(timings)
+        return [t.get('response_time', 0) > 3900 for t in timings]
         
     df = pd.DataFrame(timings)
     now = datetime.utcnow()
@@ -109,7 +148,7 @@ def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[
     # model.predict returns 1 for inliers, -1 for outliers/anomalies
     try:
         predictions = model.predict(X)
-        return [pred == -1 for pred in predictions]
+        return [bool(pred == -1) for pred in predictions]
     except Exception as e:
         print(f"Failed to predict using model for monitor {monitor_id}: {e}")
         return [False] * len(timings)

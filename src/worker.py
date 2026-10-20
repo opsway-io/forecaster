@@ -4,21 +4,41 @@ import redis
 import time
 from src.train import train_forecaster_for_monitor
 
-def main():
+def get_redis_client():
     redis_host = os.getenv("REDIS_HOST", "localhost")
     redis_port = int(os.getenv("REDIS_PORT", "6379"))
-    
-    r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+    redis_password = os.getenv("REDIS_PASSWORD", "") or None
+    sentinel_mode = os.getenv("REDIS_SENTINEL_MODE", "false").lower() in ("true", "1", "yes")
+    master_name = os.getenv("REDIS_MASTER_NAME", "mymaster")
+
+    if sentinel_mode:
+        from redis.sentinel import Sentinel
+        sentinel = Sentinel([(redis_host, redis_port)], socket_timeout=5.0, password=redis_password)
+        return sentinel.master_for(master_name, socket_timeout=10.0, password=redis_password, decode_responses=True)
+
+    return redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
+
+def main():
+    r = get_redis_client()
     
     stream_key = "TrainForecasterTask"
     group_name = "forecaster_group"
     consumer_name = "forecaster_worker_1"
     
-    try:
-        r.xgroup_create(stream_key, group_name, id='0', mkstream=True)
-    except redis.exceptions.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise e
+    while True:
+        try:
+            r.xgroup_create(stream_key, group_name, id='0', mkstream=True)
+            break
+        except redis.exceptions.ResponseError as e:
+            if "BUSYGROUP" in str(e):
+                break
+            print(f"Redis error creating group: {e}, retrying in 5s...")
+            time.sleep(5)
+            r = get_redis_client()
+        except Exception as e:
+            print(f"Failed to connect to Redis to create group: {e}, retrying in 5s...")
+            time.sleep(5)
+            r = get_redis_client()
             
     print(f"Listening to Redis stream '{stream_key}' as group '{group_name}'...")
     
@@ -51,6 +71,7 @@ def main():
         except redis.exceptions.ConnectionError:
             print("Redis connection error, retrying in 5s...")
             time.sleep(5)
+            r = get_redis_client()
         except Exception as e:
             print(f"Unexpected error: {e}")
             time.sleep(5)
