@@ -28,7 +28,7 @@ class PredictResponse(BaseModel):
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     # Predict anomalies and compute timing stats
-    timings_dicts = [t.dict() for t in req.timings]
+    timings_dicts = [t.model_dump() if hasattr(t, "model_dump") else t.dict() for t in req.timings]
     anomalies, predictions, upper_bounds, lower_bounds = predict_timings_for_monitor(req.monitor_id, timings_dicts)
     return PredictResponse(
         anomalies=anomalies,
