@@ -6,16 +6,22 @@ import mlflow.sklearn
 from sklearn.ensemble import IsolationForest
 import pandas as pd
 from datetime import datetime
+from typing import Optional
 
 from data import get_clickhouse_client, get_monitor_data
 
-def train_forecaster_for_monitor(monitor_id: int):
-    print(f"Starting training for monitor {monitor_id}")
+def model_registry_name(monitor_id: int, team_id: Optional[int] = None) -> str:
+    if team_id is not None:
+        return f"forecaster_team_{team_id}_monitor_{monitor_id}"
+    return f"forecaster_monitor_{monitor_id}"
+
+def train_forecaster_for_monitor(monitor_id: int, team_id: Optional[int] = None):
+    print(f"Starting training for team {team_id} monitor {monitor_id}")
     client = get_clickhouse_client()
-    df = get_monitor_data(client, monitor_id)
+    df = get_monitor_data(client, monitor_id, team_id=team_id)
     
     if df.empty or len(df) < 50:
-        print(f"Not enough data to train monitor {monitor_id} (found {len(df)} records)")
+        print(f"Not enough data to train team {team_id} monitor {monitor_id} (found {len(df)} records)")
         return
     
     # Feature engineering: extract hour of day and day of week
@@ -45,6 +51,8 @@ def train_forecaster_for_monitor(monitor_id: int):
     mlflow.set_experiment("Monitor_Anomaly_Detection")
     
     with mlflow.start_run():
+        if team_id is not None:
+            mlflow.log_param("team_id", team_id)
         mlflow.log_param("monitor_id", monitor_id)
         mlflow.log_param("model_type", "IsolationForest")
         mlflow.log_param("n_estimators", 100)
@@ -52,10 +60,10 @@ def train_forecaster_for_monitor(monitor_id: int):
         mlflow.log_metric("training_samples", len(df))
         
         # Log model
-        model_name = f"forecaster_monitor_{monitor_id}"
+        model_name = model_registry_name(monitor_id, team_id=team_id)
         mlflow.sklearn.log_model(model, "model", registered_model_name=model_name)
         
-        print(f"Successfully trained and logged model for monitor {monitor_id}")
+        print(f"Successfully trained and logged model {model_name}")
 
 if __name__ == "__main__":
     # Test script locally

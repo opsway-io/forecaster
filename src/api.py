@@ -16,6 +16,7 @@ class TimingMetrics(BaseModel):
     created_at: Optional[str] = None
 
 class PredictRequest(BaseModel):
+    team_id: Optional[int] = None
     monitor_id: int
     timings: list[TimingMetrics]
 
@@ -29,7 +30,7 @@ class PredictResponse(BaseModel):
 def predict(req: PredictRequest):
     # Predict anomalies and compute timing stats
     timings_dicts = [t.model_dump() if hasattr(t, "model_dump") else t.dict() for t in req.timings]
-    anomalies, predictions, upper_bounds, lower_bounds = predict_timings_for_monitor(req.monitor_id, timings_dicts)
+    anomalies, predictions, upper_bounds, lower_bounds = predict_timings_for_monitor(req.monitor_id, timings_dicts, team_id=req.team_id)
     return PredictResponse(
         anomalies=anomalies,
         predictions=predictions,
@@ -38,6 +39,7 @@ def predict(req: PredictRequest):
     )
 
 class ForecastRequest(BaseModel):
+    team_id: Optional[int] = None
     monitor_id: int
     timestamps: list[str]
 
@@ -50,7 +52,7 @@ from src.predict import forecast_for_monitor
 
 @app.post("/forecast", response_model=ForecastResponse)
 def forecast(req: ForecastRequest):
-    predictions, upper_bounds, lower_bounds = forecast_for_monitor(req.monitor_id, req.timestamps)
+    predictions, upper_bounds, lower_bounds = forecast_for_monitor(req.monitor_id, req.timestamps, team_id=req.team_id)
     return ForecastResponse(
         predictions=predictions,
         upper_bounds=upper_bounds,

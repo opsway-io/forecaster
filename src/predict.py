@@ -5,19 +5,26 @@ import mlflow
 import mlflow.sklearn
 import pandas as pd
 from datetime import datetime
+from typing import Optional
 import time
 
 # Cache for monitor profiles and models to avoid querying ClickHouse/MLflow too frequently
-# Structure: { monitor_id: (profile_map, global_mean, global_std, cached_time) }
+# Structure: { (team_id, monitor_id): (profile_map, global_mean, global_std, cached_time) }
 _profile_cache = {}
-# Structure: { monitor_id: (model, cached_time) }
+# Structure: { (team_id, monitor_id): (model, cached_time) }
 _model_cache = {}
 CACHE_TTL = 300  # Cache profiles and models for 5 minutes
 
-def get_monitor_profile(monitor_id: int):
+def _model_registry_name(monitor_id: int, team_id: Optional[int] = None) -> str:
+    if team_id is not None:
+        return f"forecaster_team_{team_id}_monitor_{monitor_id}"
+    return f"forecaster_monitor_{monitor_id}"
+
+def get_monitor_profile(monitor_id: int, team_id: Optional[int] = None):
     now = time.time()
-    if monitor_id in _profile_cache:
-        profile_map, global_mean, global_std, cached_time = _profile_cache[monitor_id]
+    cache_key = (team_id, monitor_id)
+    if cache_key in _profile_cache:
+        profile_map, global_mean, global_std, cached_time = _profile_cache[cache_key]
         if now - cached_time < CACHE_TTL:
             return profile_map, global_mean, global_std
 
@@ -25,9 +32,9 @@ def get_monitor_profile(monitor_id: int):
     try:
         from data import get_clickhouse_client, get_monitor_data
         client = get_clickhouse_client()
-        df = get_monitor_data(client, monitor_id)
+        df = get_monitor_data(client, monitor_id, team_id=team_id)
     except Exception as e:
-        print(f"Failed to fetch historical data for stats profile of monitor {monitor_id}: {e}")
+        print(f"Failed to fetch historical data for stats profile of team {team_id} monitor {monitor_id}: {e}")
         df = pd.DataFrame()
 
     if not df.empty and len(df) >= 5:
@@ -55,19 +62,20 @@ def get_monitor_profile(monitor_id: int):
         global_mean = 200.0  # Fallback mean response time in ms
         global_std = 50.0   # Fallback standard deviation
 
-    _profile_cache[monitor_id] = (profile_map, global_mean, global_std, now)
+    _profile_cache[cache_key] = (profile_map, global_mean, global_std, now)
     return profile_map, global_mean, global_std
 
-def _get_or_load_model(monitor_id: int):
+def _get_or_load_model(monitor_id: int, team_id: Optional[int] = None):
     now = time.time()
-    if monitor_id in _model_cache:
-        cached_model, cached_time = _model_cache[monitor_id]
+    cache_key = (team_id, monitor_id)
+    if cache_key in _model_cache:
+        cached_model, cached_time = _model_cache[cache_key]
         if now - cached_time < CACHE_TTL:
             return cached_model
 
     mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
     mlflow.set_tracking_uri(mlflow_tracking_uri)
-    model_name = f"forecaster_monitor_{monitor_id}"
+    model_name = _model_registry_name(monitor_id, team_id=team_id)
 
     model = None
     try:
@@ -81,13 +89,13 @@ def _get_or_load_model(monitor_id: int):
             model_uri = f"models:/{model_name}/latest"
         model = mlflow.sklearn.load_model(model_uri)
     except Exception as e:
-        print(f"Failed to load MLflow model for monitor {monitor_id}: {e}")
+        print(f"Failed to load MLflow model {model_name}: {e}")
         # Fallback: train an in-memory IsolationForest directly from ClickHouse history if enough samples exist
         try:
             from sklearn.ensemble import IsolationForest
             from data import get_clickhouse_client, get_monitor_data
             ch_client = get_clickhouse_client()
-            df_hist = get_monitor_data(ch_client, monitor_id)
+            df_hist = get_monitor_data(ch_client, monitor_id, team_id=team_id)
             if not df_hist.empty and len(df_hist) >= 50:
                 df_hist['hour'] = df_hist['created_at'].dt.hour
                 df_hist['day_of_week'] = df_hist['created_at'].dt.dayofweek
@@ -105,20 +113,20 @@ def _get_or_load_model(monitor_id: int):
                 fallback_model = IsolationForest(n_estimators=100, contamination=0.01, random_state=42)
                 fallback_model.fit(X_hist)
                 model = fallback_model
-                print(f"Trained in-memory fallback IsolationForest for monitor {monitor_id} ({len(df_hist)} samples)")
+                print(f"Trained in-memory fallback IsolationForest for team {team_id} monitor {monitor_id} ({len(df_hist)} samples)")
         except Exception as fallback_err:
-            print(f"Fallback training failed for monitor {monitor_id}: {fallback_err}")
+            print(f"Fallback training failed for team {team_id} monitor {monitor_id}: {fallback_err}")
 
-    _model_cache[monitor_id] = (model, now)
+    _model_cache[cache_key] = (model, now)
     return model
 
-def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[bool]:
+def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict], team_id: Optional[int] = None) -> list[bool]:
     """
     Predicts if the given list of timings are anomalies using the trained model for the monitor.
     Each timing dict should contain the response_time and granular timing phases.
     Returns a list of booleans where True means anomaly.
     """
-    model = _get_or_load_model(monitor_id)
+    model = _get_or_load_model(monitor_id, team_id=team_id)
     if model is None:
         # Default to False (no anomaly) if model is missing or fails to load,
         # unless this is the E2E test generating a ~4000ms response time
@@ -155,20 +163,20 @@ def predict_anomalies_for_monitor(monitor_id: int, timings: list[dict]) -> list[
         print(f"Failed to predict using model for monitor {monitor_id}: {e}")
         return [False] * len(timings)
 
-def predict_timings_for_monitor(monitor_id: int, timings: list[dict]) -> tuple[list[bool], list[float], list[float], list[float]]:
+def predict_timings_for_monitor(monitor_id: int, timings: list[dict], team_id: Optional[int] = None) -> tuple[list[bool], list[float], list[float], list[float]]:
     """
     Predicts anomalies and calculates expected response times + upper/lower confidence bounds.
     Returns (anomalies, predictions, upper_bounds, lower_bounds).
     """
     # 1. Predict anomalies using the machine learning model
-    anomalies = predict_anomalies_for_monitor(monitor_id, timings)
+    anomalies = predict_anomalies_for_monitor(monitor_id, timings, team_id=team_id)
 
-    predictions, upper_bounds, lower_bounds = _calculate_bounds(monitor_id, [t.get('created_at') for t in timings])
+    predictions, upper_bounds, lower_bounds = _calculate_bounds(monitor_id, [t.get('created_at') for t in timings], team_id=team_id)
 
     return anomalies, predictions, upper_bounds, lower_bounds
 
-def _calculate_bounds(monitor_id: int, timestamps: list[str]) -> tuple[list[float], list[float], list[float]]:
-    profile_map, global_mean, global_std = get_monitor_profile(monitor_id)
+def _calculate_bounds(monitor_id: int, timestamps: list[str], team_id: Optional[int] = None) -> tuple[list[float], list[float], list[float]]:
+    profile_map, global_mean, global_std = get_monitor_profile(monitor_id, team_id=team_id)
 
     predictions = []
     upper_bounds = []
@@ -205,11 +213,11 @@ def _calculate_bounds(monitor_id: int, timestamps: list[str]) -> tuple[list[floa
 
     return predictions, upper_bounds, lower_bounds
 
-def forecast_for_monitor(monitor_id: int, timestamps: list[str]) -> tuple[list[float], list[float], list[float]]:
+def forecast_for_monitor(monitor_id: int, timestamps: list[str], team_id: Optional[int] = None) -> tuple[list[float], list[float], list[float]]:
     """
     Returns (predictions, upper_bounds, lower_bounds) for the given timestamps without running anomaly detection.
     """
-    return _calculate_bounds(monitor_id, timestamps)
+    return _calculate_bounds(monitor_id, timestamps, team_id=team_id)
 
 if __name__ == "__main__":
     # Test script locally

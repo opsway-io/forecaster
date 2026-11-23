@@ -11,7 +11,13 @@ def get_clickhouse_client():
     password = os.getenv("CLICKHOUSE_PASSWORD", "")
     return clickhouse_connect.get_client(host=host, port=port, username=user, password=password, database=database)
 
-def get_monitor_data(client, monitor_id: int) -> pd.DataFrame:
+def get_monitor_data(client, monitor_id: int, team_id: Optional[int] = None) -> pd.DataFrame:
+    where_clause = "WHERE monitor_id = {monitor_id:UInt64}"
+    parameters = {"monitor_id": int(monitor_id)}
+    if team_id is not None:
+        where_clause = "WHERE team_id = {team_id:UInt64} AND monitor_id = {monitor_id:UInt64}"
+        parameters["team_id"] = int(team_id)
+
     query = f"""
     SELECT 
         created_at,
@@ -23,7 +29,7 @@ def get_monitor_data(client, monitor_id: int) -> pd.DataFrame:
         timing_content_transfer / 1000000.0 AS content_transfer,
         status_code
     FROM checks
-    WHERE monitor_id = {monitor_id}
+    {where_clause}
     ORDER BY created_at ASC
     """
-    return client.query_df(query)
+    return client.query_df(query, parameters=parameters)

@@ -57,8 +57,12 @@ def main():
                         payload = json.loads(payload_str)
                         
                         monitor_id = payload.get('monitor_id')
+                        team_id = payload.get('team_id')
                         if monitor_id is not None:
-                            train_forecaster_for_monitor(int(monitor_id))
+                            train_forecaster_for_monitor(
+                                int(monitor_id),
+                                team_id=int(team_id) if team_id is not None else None,
+                            )
                         else:
                             print("Missing monitor_id in payload")
                             
